@@ -557,20 +557,35 @@
             return;
         }
         try {
-            const provider = new ethers.BrowserProvider(window.ethereum);
-            const network = await provider.getNetwork();
-            if (Number(network.chainId) !== CHAIN_ID) {
+            // Request accounts first
+            await window.ethereum.request({ method: 'eth_requestAccounts' });
+
+            // Resolve chain id with broad compatibility
+            let chainIdNum;
+            try {
+                const chainHex = await window.ethereum.request({ method: 'eth_chainId' });
+                chainIdNum = parseInt(chainHex, 16);
+            } catch (_) {
+                // Fallback for older/non-standard providers
+                const netVersion = await window.ethereum.request({ method: 'net_version' });
+                chainIdNum = Number(netVersion);
+            }
+
+            if (chainIdNum !== CHAIN_ID) {
                 document.getElementById('network-warning').style.display = 'block';
                 try {
                     await window.ethereum.request({
                         method: 'wallet_switchEthereumChain',
                         params: [{ chainId: '0x1' }],
                     });
-                } catch (e) { /* user rejected */ }
-                return;
+                } catch (e) {
+                    showTxStatus('Please switch wallet to Ethereum Mainnet', 'error');
+                    return;
+                }
             }
             document.getElementById('network-warning').style.display = 'none';
 
+            const provider = new ethers.BrowserProvider(window.ethereum);
             signer = await provider.getSigner();
             userAddress = await signer.getAddress();
             marketWrite = new ethers.Contract(CONTRACT_ADDRESS, MARKET_ABI, signer);
