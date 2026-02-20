@@ -605,10 +605,39 @@
         }
     }
 
-    // Listen for account/chain changes
+    // Listen for account/chain changes (no hard reload loops)
     if (window.ethereum) {
-        window.ethereum.on('accountsChanged', () => { location.reload(); });
-        window.ethereum.on('chainChanged', () => { location.reload(); });
+        window.ethereum.on('accountsChanged', async (accounts) => {
+            if (!accounts || accounts.length === 0) {
+                userAddress = null;
+                signer = null;
+                marketWrite = null;
+                document.querySelectorAll('.connect-wallet-btn .btn-responsive-text').forEach(el => {
+                    el.textContent = 'Connect Wallet';
+                });
+                await refreshApprovalState();
+                render();
+                return;
+            }
+            userAddress = accounts[0];
+            const provider = new ethers.BrowserProvider(window.ethereum);
+            signer = await provider.getSigner();
+            marketWrite = new ethers.Contract(CONTRACT_ADDRESS, MARKET_ABI, signer);
+            document.querySelectorAll('.connect-wallet-btn .btn-responsive-text').forEach(el => {
+                el.textContent = shortAddr(userAddress);
+            });
+            await updateBalances();
+            await refreshApprovalState();
+            render();
+        });
+
+        window.ethereum.on('chainChanged', async () => {
+            // Re-run wallet setup without forcing full page reload
+            if (userAddress) {
+                await connectWallet();
+                await refreshAll();
+            }
+        });
     }
 
     async function updateBalances() {
@@ -1149,10 +1178,24 @@
     updatePreview();
     initProvider();
 
-    // Auto-reconnect if wallet was previously connected
+    // Silent reconnect (no wallet prompt loop)
     if (window.ethereum) {
-        window.ethereum.request({ method: 'eth_accounts' }).then(accounts => {
-            if (accounts.length > 0) connectWallet();
+        window.ethereum.request({ method: 'eth_accounts' }).then(async (accounts) => {
+            if (!accounts || accounts.length === 0) return;
+            try {
+                userAddress = accounts[0];
+                const provider = new ethers.BrowserProvider(window.ethereum);
+                signer = await provider.getSigner();
+                marketWrite = new ethers.Contract(CONTRACT_ADDRESS, MARKET_ABI, signer);
+                document.querySelectorAll('.connect-wallet-btn .btn-responsive-text').forEach(el => {
+                    el.textContent = shortAddr(userAddress);
+                });
+                await updateBalances();
+                await refreshApprovalState();
+                render();
+            } catch (e) {
+                console.warn('Silent reconnect failed', e);
+            }
         });
     }
     </script>
