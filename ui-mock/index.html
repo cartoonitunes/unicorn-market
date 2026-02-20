@@ -1085,12 +1085,38 @@
 
     // ─── Cancel Order ──────────────────────────────────────────────────
     async function doCancelOrder(orderId) {
-        if (!marketWrite || txPending) return;
-        if (!confirm(`Cancel order #${orderId}?`)) return;
+        if (!userAddress) {
+            showTxStatus('Connect wallet first', 'error');
+            return;
+        }
+        if (!marketWrite) {
+            showTxStatus('Wallet not ready on mainnet', 'error');
+            return;
+        }
+        if (txPending) {
+            showTxStatus('Another transaction is in progress', 'pending');
+            return;
+        }
+
+        const order = [...asks, ...bids].find(o => Number(o.id) === Number(orderId));
+        if (!order) {
+            showTxStatus('Order not found (it may have been filled/cancelled already)', 'error');
+            return;
+        }
+        if (order.maker.toLowerCase() !== userAddress.toLowerCase()) {
+            showTxStatus('Only the maker can cancel this order', 'error');
+            return;
+        }
+
+        const ok = confirm(`Cancel order #${orderId}?`);
+        if (!ok) {
+            showTxStatus('Cancel aborted', 'error');
+            return;
+        }
 
         txPending = true;
         try {
-            showTxStatus('Cancelling order...', 'pending');
+            showTxStatus('Cancelling order... Confirm in wallet', 'pending');
             const tx = await marketWrite.cancelOrder(orderId);
             showTxStatus(`TX submitted: ${shortAddr(tx.hash)}`, 'pending');
             await tx.wait();
