@@ -1152,12 +1152,6 @@
             return;
         }
 
-        const ok = confirm(`Cancel order #${orderId}?`);
-        if (!ok) {
-            showTxStatus('Cancel aborted', 'error');
-            return;
-        }
-
         txPending = true;
         try {
             showTxStatus('Cancelling order... Confirm in wallet', 'pending');
