@@ -1,66 +1,37 @@
-## Foundry
+# UnicornMarket
 
-**Foundry is a blazing fast, portable and modular toolkit for Ethereum application development written in Rust.**
+Fully onchain orderbook for Unicorn ecosystem trading.
 
-Foundry consists of:
+## Primary v1 market path
+- **Unicorn (unwrapped)** ⇄ **Wrapped Unicorn Meat (wMEAT)**
 
-- **Forge**: Ethereum testing framework (like Truffle, Hardhat and DappTools).
-- **Cast**: Swiss army knife for interacting with EVM smart contracts, sending transactions and getting chain data.
-- **Anvil**: Local Ethereum node, akin to Ganache, Hardhat Network.
-- **Chisel**: Fast, utilitarian, and verbose solidity REPL.
+Secondary compatibility paths (wrapped Unicorn / unwrapped Meat) are supported but not the primary UX focus.
 
-## Documentation
+## Why this exists
+- Grinder revival is blocked pending upstream decision.
+- AMM pooling is awkward with 0-decimal legacy tokens.
+- UnicornMarket provides transparent, cancellable, onchain bids/asks with event logs.
 
-https://book.getfoundry.sh/
+## Contract
+- `src/UnicornMarket.sol`
+- Hardcoded canonical token set (no arbitrary token addresses)
+- Core actions: place order, partial/full fill, cancel
+- Ledger via events: `OrderPlaced`, `OrderFilled`, `OrderCancelled`
 
-## Usage
+## Testing
 
-### Build
-
-```shell
-$ forge build
+### Unit/fork tests
+```bash
+forge test
 ```
 
-### Test
-
-```shell
-$ forge test
+### Mainnet fork (recommended)
+```bash
+MAINNET_RPC_URL="https://eth-mainnet.g.alchemy.com/v2/<KEY>" forge test -vv
 ```
 
-### Format
+This suite validates behavior against real deployed contracts on an Ethereum mainnet fork.
 
-```shell
-$ forge fmt
-```
-
-### Gas Snapshots
-
-```shell
-$ forge snapshot
-```
-
-### Anvil
-
-```shell
-$ anvil
-```
-
-### Deploy
-
-```shell
-$ forge script script/Counter.s.sol:CounterScript --rpc-url <your_rpc_url> --private-key <your_private_key>
-```
-
-### Cast
-
-```shell
-$ cast <subcommand>
-```
-
-### Help
-
-```shell
-$ forge --help
-$ anvil --help
-$ cast --help
-```
+## UI mock
+- `ui-mock/index.html` (mock data only)
+- Mobile + desktop orderbook/ledger/trade layout for review
