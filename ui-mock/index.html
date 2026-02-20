@@ -286,6 +286,7 @@
                             <label class="fs-7 text-muted" id="price-label">Price (w🍖 per 🦄)</label>
                             <input id="price" placeholder="0" aria-label="price" class="form-control border border-2 border-black rounded-2 mb-2 fs-6" style="padding:10px;" />
                             <button id="create-order" class="btn btn-md btn-secondary border border-2 border-black contrast-shadow-sm w-100 fw-bold">Connect Wallet</button>
+                            <p id="approval-help" class="fs-7 text-muted mt-2 mb-1">Order placement uses two transactions when needed: Approve token (if allowance is insufficient), then Place Order.</p>
                             <div class="market-row mt-2"><span class="fs-7 text-muted">Preview</span><strong id="preview" class="fs-7">—</strong></div>
                             <div id="tx-status"></div>
                         </div>
@@ -479,6 +480,7 @@
     const priceEl = document.getElementById('price');
     const amountLabel = document.getElementById('amount-label');
     const priceLabel = document.getElementById('price-label');
+    const approvalHelp = document.getElementById('approval-help');
 
     // ─── Helpers ───────────────────────────────────────────────────────
     const fmt = (n) => Number(n).toLocaleString(undefined, { maximumFractionDigits: 3 });
@@ -579,9 +581,9 @@
             });
 
             createBtn.disabled = false;
-            createBtn.textContent = 'Place Order';
 
             await updateBalances();
+            await refreshApprovalState();
             render();
         } catch (e) {
             console.error('Wallet connect error:', e);
@@ -886,9 +888,63 @@
         }
     }
 
-    sideEl.addEventListener('change', updatePreview);
-    amountEl.addEventListener('input', updatePreview);
-    priceEl.addEventListener('input', updatePreview);
+    function getOrderDraft() {
+        const side = sideEl.value;
+        const amount = Number(amountEl.value || 0);
+        const price = Number(priceEl.value || 0);
+        if (!amount || !price || amount <= 0 || price <= 0) return null;
+
+        let sellToken, buyToken, sellAmount, buyAmount;
+        if (side === 'ask') {
+            sellToken = UNICORN;
+            buyToken = W_MEAT;
+            sellAmount = BigInt(Math.floor(amount));
+            buyAmount = BigInt(Math.floor(amount * price * 1000));
+        } else {
+            const unicornsWanted = Math.floor(price);
+            if (!Number.isInteger(unicornsWanted) || unicornsWanted <= 0) return null;
+            sellToken = W_MEAT;
+            buyToken = UNICORN;
+            sellAmount = BigInt(Math.floor(amount * 1000));
+            buyAmount = BigInt(unicornsWanted);
+        }
+
+        if (sellAmount <= 0n || buyAmount <= 0n) return null;
+        return { side, amount, price, sellToken, buyToken, sellAmount, buyAmount };
+    }
+
+    async function refreshApprovalState() {
+        if (!userAddress || !signer) {
+            createBtn.textContent = 'Connect Wallet';
+            approvalHelp.textContent = 'Order placement uses two transactions when needed: Approve token (if allowance is insufficient), then Place Order.';
+            return;
+        }
+        if (txPending) return;
+
+        const draft = getOrderDraft();
+        if (!draft) {
+            createBtn.textContent = 'Enter Order Details';
+            approvalHelp.textContent = 'Fill in amount and price. If allowance is low, the first click will be Approve, then Place Order.';
+            return;
+        }
+
+        try {
+            const token = new ethers.Contract(draft.sellToken, ERC20_ABI, readProvider);
+            const allowance = await token.allowance(userAddress, CONTRACT_ADDRESS);
+            const approved = allowance >= draft.sellAmount;
+            createBtn.textContent = approved ? 'Place Order' : 'Approve';
+            approvalHelp.textContent = approved
+                ? 'Allowance is sufficient. Next transaction will place your order.'
+                : 'Step 1 of 2: Approve this token spend. After approval confirms, Step 2 will switch to Place Order.';
+        } catch (e) {
+            createBtn.textContent = 'Place Order';
+            approvalHelp.textContent = 'Could not verify allowance right now. If needed, you will be prompted to approve first.';
+        }
+    }
+
+    sideEl.addEventListener('change', () => { updatePreview(); refreshApprovalState(); });
+    amountEl.addEventListener('input', () => { updatePreview(); refreshApprovalState(); });
+    priceEl.addEventListener('input', () => { updatePreview(); refreshApprovalState(); });
 
     // ─── Place Order ───────────────────────────────────────────────────
     createBtn.addEventListener('click', async () => {
@@ -896,53 +952,36 @@
         if (!marketWrite) return;
         if (txPending) return;
 
-        const side = sideEl.value;
-        const amount = Number(amountEl.value || 0);
-        const price = Number(priceEl.value || 0);
-        if (!amount || !price || amount <= 0 || price <= 0) {
-            showTxStatus('Enter valid amount and price', 'error');
+        const draft = getOrderDraft();
+        if (!draft) {
+            showTxStatus('Enter valid order inputs', 'error');
             return;
         }
 
-        let sellToken, buyToken, sellAmount, buyAmount;
-
-        if (side === 'ask') {
-            // Sell UNICORN for W_MEAT
-            sellToken = UNICORN;
-            buyToken = W_MEAT;
-            sellAmount = BigInt(Math.floor(amount)); // 0 decimals
-            buyAmount = BigInt(Math.floor(amount * price * 1000)); // 3 decimals
-        } else {
-            // Bid UX: amount = total w🍖 offered, price field = unicorns wanted (whole)
-            const unicornsWanted = Math.floor(price);
-            if (!Number.isInteger(unicornsWanted) || unicornsWanted <= 0) {
-                showTxStatus('Unicorns wanted must be a whole number ≥ 1', 'error');
-                return;
-            }
-            sellToken = W_MEAT;
-            buyToken = UNICORN;
-            sellAmount = BigInt(Math.floor(amount * 1000)); // total w🍖 offered, 3 decimals
-            buyAmount = BigInt(unicornsWanted); // whole unicorns, 0 decimals
-        }
+        const { sellToken, buyToken, sellAmount, buyAmount } = draft;
 
         txPending = true;
         createBtn.disabled = true;
         createBtn.textContent = 'Checking allowance...';
 
         try {
-            // Check + approve
             const token = new ethers.Contract(sellToken, ERC20_ABI, signer);
             const allowance = await token.allowance(userAddress, CONTRACT_ADDRESS);
+
             if (allowance < sellAmount) {
-                showTxStatus('Approving token...', 'pending');
+                // Step 1 only: approve, then return. Next click places order.
+                showTxStatus('Step 1/2: Approve token spend in wallet', 'pending');
                 createBtn.textContent = 'Approve in wallet...';
                 const approveTx = await token.approve(CONTRACT_ADDRESS, sellAmount);
                 showTxStatus('Waiting for approval confirmation...', 'pending');
                 await approveTx.wait();
+                showTxStatus('Approval confirmed. Step 2/2: click Place Order.', 'success');
+                await refreshApprovalState();
+                return;
             }
 
-            // Place order
-            showTxStatus('Placing order...', 'pending');
+            // Step 2: place order
+            showTxStatus('Step 2/2: Placing order...', 'pending');
             createBtn.textContent = 'Confirm in wallet...';
             const tx = await marketWrite.placeOrder(sellToken, buyToken, sellAmount, buyAmount);
             showTxStatus(`TX submitted: ${shortAddr(tx.hash)}`, 'pending');
@@ -961,7 +1000,7 @@
         } finally {
             txPending = false;
             createBtn.disabled = false;
-            createBtn.textContent = 'Place Order';
+            await refreshApprovalState();
         }
     });
 
