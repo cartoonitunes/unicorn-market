@@ -78,7 +78,8 @@
 
         details.method { margin:8px 0; overflow:hidden; }
         details.method summary { cursor:pointer; font-weight:700; font-size:12px; padding:8px 10px; background:linear-gradient(135deg,#ffe0ec,#ffd0df); border-bottom:1px dashed #bbb; }
-        pre.code { margin:0; padding:10px; background:#101318 !important; color:#e8edf3 !important; overflow:auto; max-width:100%; white-space:pre; font-size:11px; line-height:1.45; border-radius: 0 0 8px 8px; }
+        pre.code { margin:0; padding:10px; background:#101318 !important; color:#e8edf3 !important; overflow-x:auto; overflow-y:hidden; max-width:100%; white-space:pre; font-size:11px; line-height:1.45; border-radius: 0 0 8px 8px; -webkit-overflow-scrolling:touch; }
+        details.method { max-width:100%; overflow:hidden; }
         .kw{color:#ff7ab6;font-weight:700;} .fn{color:#7dcfff;} .var{color:#c3e88d;} .num{color:#f7c873;} .addr{color:#82aaff;}
 
         .how-it-works-grid { display:grid; gap:12px; }
@@ -114,6 +115,7 @@
             details.method summary { font-size:11px; padding:6px 8px; }
             pre.code { font-size:10px; padding:8px; }
             .fill-inline input { width:60px; }
+            #transparency { overflow:hidden; }
         }
         @media (max-width:380px) {
             .stats-grid { grid-template-columns:1fr 1fr; gap:6px; }
@@ -531,15 +533,18 @@
     // ─── Initialize Provider ───────────────────────────────────────────
     async function initProvider() {
         try {
-            readProvider = new ethers.JsonRpcProvider(RPC_URL);
+            readProvider = new ethers.JsonRpcProvider(RPC_URL, 1, { staticNetwork: true });
             marketRead = new ethers.Contract(CONTRACT_ADDRESS, MARKET_ABI, readProvider);
+            // Quick sanity check
+            const count = await marketRead.orderCount();
+            console.log('UnicornMarket connected, orderCount:', count.toString());
             await loadOrderbook();
             await loadLedger();
             startAutoRefresh();
         } catch (e) {
             console.error('Init error:', e);
-            asksEl.innerHTML = '<p class="fs-7 text-muted text-center py-2 mb-0">Unable to load orderbook — contract may not be deployed yet</p>';
-            bidsEl.innerHTML = '<p class="fs-7 text-muted text-center py-2 mb-0">Unable to load orderbook</p>';
+            asksEl.innerHTML = '<p class="fs-7 text-muted text-center py-2 mb-0">Unable to load orderbook — check console for details</p>';
+            bidsEl.innerHTML = '<p class="fs-7 text-muted text-center py-2 mb-0"><button onclick="initProvider()" style="cursor:pointer;text-decoration:underline;background:none;border:none;color:#6c757d;font-size:inherit;">Retry</button></p>';
         }
     }
 
