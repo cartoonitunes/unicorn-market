@@ -703,10 +703,14 @@
             const fromBlock = Math.max(0, currentBlock - EVENT_LOOKBACK_BLOCKS);
             const iface = new ethers.Interface(MARKET_ABI);
 
+            const topicPlaced = ethers.id('OrderPlaced(uint256,address,address,address,uint256,uint256)');
+            const topicFilled = ethers.id('OrderFilled(uint256,address,uint256,uint256,uint256,uint256)');
+            const topicCancelled = ethers.id('OrderCancelled(uint256,address,uint256)');
+
             const [placedLogs, filledLogs, cancelledLogs] = await Promise.all([
-                readProvider.getLogs({ address: CONTRACT_ADDRESS, topics: [iface.getEvent('OrderPlaced').topicHash], fromBlock, toBlock: 'latest' }),
-                readProvider.getLogs({ address: CONTRACT_ADDRESS, topics: [iface.getEvent('OrderFilled').topicHash], fromBlock, toBlock: 'latest' }),
-                readProvider.getLogs({ address: CONTRACT_ADDRESS, topics: [iface.getEvent('OrderCancelled').topicHash], fromBlock, toBlock: 'latest' }),
+                readProvider.getLogs({ address: CONTRACT_ADDRESS, topics: [topicPlaced], fromBlock, toBlock: 'latest' }),
+                readProvider.getLogs({ address: CONTRACT_ADDRESS, topics: [topicFilled], fromBlock, toBlock: 'latest' }),
+                readProvider.getLogs({ address: CONTRACT_ADDRESS, topics: [topicCancelled], fromBlock, toBlock: 'latest' }),
             ]);
 
             ledgerEntries = [];
