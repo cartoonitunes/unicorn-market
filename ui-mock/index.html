@@ -469,6 +469,9 @@
     let txPending = false;
     let refreshTick = 0;
     let currentRpcIndex = 0;
+    let ledgerLastBlock = DEPLOYMENT_BLOCK;
+
+    const LEDGER_CACHE_KEY = 'unicornMarketLedgerCacheV1';
 
     // ─── DOM refs ──────────────────────────────────────────────────────
     const asksEl = document.getElementById('asks');
@@ -727,6 +730,32 @@
 
     async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+    function loadLedgerCache() {
+        try {
+            const raw = localStorage.getItem(LEDGER_CACHE_KEY);
+            if (!raw) return;
+            const parsed = JSON.parse(raw);
+            if (!Array.isArray(parsed?.entries)) return;
+            ledgerEntries = parsed.entries;
+            ledgerLastBlock = Number(parsed.lastBlock || DEPLOYMENT_BLOCK);
+            renderLedger();
+        } catch (e) {
+            console.warn('ledger cache load failed', e);
+        }
+    }
+
+    function saveLedgerCache() {
+        try {
+            const payload = {
+                lastBlock: ledgerLastBlock,
+                entries: ledgerEntries.slice(0, 200),
+            };
+            localStorage.setItem(LEDGER_CACHE_KEY, JSON.stringify(payload));
+        } catch (e) {
+            console.warn('ledger cache save failed', e);
+        }
+    }
+
     async function getLogsChunked(topics0, fromBlock, toBlock) {
         // Free-tier RPC can cap eth_getLogs ranges and request rates.
         // Query in small chunks, combine all market event topics in one pass.
@@ -734,19 +763,27 @@
         const out = [];
         for (let start = fromBlock; start <= toBlock; start += chunkSize) {
             const end = Math.min(toBlock, start + chunkSize - 1);
-            try {
-                const logs = await readProvider.getLogs({
-                    address: CONTRACT_ADDRESS,
-                    topics: [topics0],
-                    fromBlock: start,
-                    toBlock: end,
-                });
-                if (logs && logs.length) out.push(...logs);
-            } catch (e) {
-                // Skip failed chunks instead of failing the whole ledger.
-                console.warn('getLogs chunk failed', { start, end, err: e?.shortMessage || e?.message || e });
+            let ok = false;
+            for (let attempt = 1; attempt <= 3; attempt++) {
+                try {
+                    const logs = await readProvider.getLogs({
+                        address: CONTRACT_ADDRESS,
+                        topics: [topics0],
+                        fromBlock: start,
+                        toBlock: end,
+                    });
+                    if (logs && logs.length) out.push(...logs);
+                    ok = true;
+                    break;
+                } catch (e) {
+                    if (attempt === 3) {
+                        console.warn('getLogs chunk failed', { start, end, err: e?.shortMessage || e?.message || e });
+                    } else {
+                        await sleep(150 * attempt);
+                    }
+                }
             }
-            await sleep(25);
+            await sleep(ok ? 20 : 100);
         }
         return out;
     }
@@ -755,35 +792,50 @@
     async function loadLedger() {
         try {
             const currentBlock = await readProvider.getBlockNumber();
-            const fromBlock = Math.max(DEPLOYMENT_BLOCK, currentBlock - EVENT_LOOKBACK_BLOCKS);
             const iface = new ethers.Interface(MARKET_ABI);
 
             const topicPlaced = ethers.id('OrderPlaced(uint256,address,address,address,uint256,uint256)').toLowerCase();
             const topicFilled = ethers.id('OrderFilled(uint256,address,uint256,uint256,uint256,uint256)').toLowerCase();
             const topicCancelled = ethers.id('OrderCancelled(uint256,address,uint256)').toLowerCase();
 
+            // Incremental sync: only fetch new blocks after last successful ledger block.
+            // First run (no cache) bootstraps from deployment block.
+            const startFrom = Math.max(DEPLOYMENT_BLOCK, (ledgerLastBlock || DEPLOYMENT_BLOCK));
+            const fromBlock = startFrom <= currentBlock ? startFrom : currentBlock;
+
             const allLogs = await getLogsChunked([topicPlaced, topicFilled, topicCancelled], fromBlock, currentBlock);
 
-            ledgerEntries = [];
-
+            const newEntries = [];
             for (const log of allLogs) {
                 const parsed = iface.parseLog(log);
                 const t0 = (log.topics?.[0] || '').toLowerCase();
+                const key = `${log.transactionHash}:${log.logIndex}`;
 
                 if (t0 === topicPlaced) {
                     const sym = tokenSymbol(parsed.args.sellToken);
                     const amt = isUnicornSide(parsed.args.sellToken)
                         ? `${fmt(Number(parsed.args.sellAmountTotal))} ${sym}`
                         : `${fmt(Number(parsed.args.sellAmountTotal) / 1000)} ${sym}`;
-                    ledgerEntries.push({ block: log.blockNumber, text: `Placed #${Number(parsed.args.orderId)} · ${amt} by ${shortAddr(parsed.args.maker)}` });
+                    newEntries.push({ key, block: log.blockNumber, text: `Placed #${Number(parsed.args.orderId)} · ${amt} by ${shortAddr(parsed.args.maker)}` });
                 } else if (t0 === topicFilled) {
-                    ledgerEntries.push({ block: log.blockNumber, text: `Filled #${Number(parsed.args.orderId)} · took ${fmt(Number(parsed.args.sellAmountFilled))} for ${fmt(Number(parsed.args.buyAmountPaid))} by ${shortAddr(parsed.args.taker)}` });
+                    newEntries.push({ key, block: log.blockNumber, text: `Filled #${Number(parsed.args.orderId)} · took ${fmt(Number(parsed.args.sellAmountFilled))} for ${fmt(Number(parsed.args.buyAmountPaid))} by ${shortAddr(parsed.args.taker)}` });
                 } else if (t0 === topicCancelled) {
-                    ledgerEntries.push({ block: log.blockNumber, text: `Cancelled #${Number(parsed.args.orderId)} · ${fmt(Number(parsed.args.sellAmountRefunded))} refunded to ${shortAddr(parsed.args.maker)}` });
+                    newEntries.push({ key, block: log.blockNumber, text: `Cancelled #${Number(parsed.args.orderId)} · ${fmt(Number(parsed.args.sellAmountRefunded))} refunded to ${shortAddr(parsed.args.maker)}` });
+                }
+            }
+
+            const seen = new Set(ledgerEntries.map(e => e.key || `${e.block}:${e.text}`));
+            for (const e of newEntries) {
+                if (!seen.has(e.key)) {
+                    ledgerEntries.push(e);
+                    seen.add(e.key);
                 }
             }
 
             ledgerEntries.sort((a, b) => b.block - a.block);
+            ledgerEntries = ledgerEntries.slice(0, 200);
+            ledgerLastBlock = currentBlock + 1;
+            saveLedgerCache();
             renderLedger();
         } catch (e) {
             console.warn('Ledger load error:', e);
@@ -797,7 +849,10 @@
                     return;
                 } catch (_) {}
             }
-            ledgerEl.innerHTML = '<p class="fs-7 text-muted text-center py-2 mb-0">Unable to load events</p>';
+            // Keep cached ledger visible instead of replacing with hard error.
+            if (!ledgerEntries.length) {
+                ledgerEl.innerHTML = '<p class="fs-7 text-muted text-center py-2 mb-0">Unable to load events right now</p>';
+            }
         }
     }
 
@@ -1237,6 +1292,7 @@
 
     // ─── Boot ──────────────────────────────────────────────────────────
     updatePreview();
+    loadLedgerCache();
     initProvider();
 
     // Silent reconnect (no wallet prompt loop)
