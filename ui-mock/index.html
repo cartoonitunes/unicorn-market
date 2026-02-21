@@ -420,7 +420,10 @@
 
     // ─── Config ────────────────────────────────────────────────────────
     const CONTRACT_ADDRESS = '0xA352B50A91C648c97F7aC0a80D686D297b62693E'; // UPDATE ON DEPLOY
-    const RPC_URL = 'https://eth-mainnet.g.alchemy.com/v2/J3_kv3R_rj4tIrl60I1dQcLvkmIPaTyE';
+    const RPC_URLS = [
+        'https://rarible.com/nodes/ethereum-node',
+        'https://eth-mainnet.g.alchemy.com/v2/J3_kv3R_rj4tIrl60I1dQcLvkmIPaTyE',
+    ];
     const CHAIN_ID = 1; // Ethereum Mainnet
 
     const UNICORN  = '0x89205A3A3b2A69De6Dbf7f01ED13B2108B2c43e7';
@@ -465,6 +468,7 @@
     let activeFillId = null;
     let txPending = false;
     let refreshTick = 0;
+    let currentRpcIndex = 0;
 
     // ─── DOM refs ──────────────────────────────────────────────────────
     const asksEl = document.getElementById('asks');
@@ -537,11 +541,25 @@
     // ─── Initialize Provider ───────────────────────────────────────────
     async function initProvider() {
         try {
-            readProvider = new ethers.JsonRpcProvider(RPC_URL, 1, { staticNetwork: true });
-            marketRead = new ethers.Contract(CONTRACT_ADDRESS, MARKET_ABI, readProvider);
-            // Quick sanity check
-            const count = await marketRead.orderCount();
-            console.log('UnicornMarket connected, orderCount:', count.toString());
+            let connected = false;
+            let lastErr;
+            for (let i = 0; i < RPC_URLS.length; i++) {
+                try {
+                    const p = new ethers.JsonRpcProvider(RPC_URLS[i], 1, { staticNetwork: true });
+                    const c = new ethers.Contract(CONTRACT_ADDRESS, MARKET_ABI, p);
+                    const count = await c.orderCount();
+                    readProvider = p;
+                    marketRead = c;
+                    currentRpcIndex = i;
+                    connected = true;
+                    console.log('UnicornMarket connected via RPC', RPC_URLS[i], 'orderCount:', count.toString());
+                    break;
+                } catch (e) {
+                    lastErr = e;
+                }
+            }
+            if (!connected) throw lastErr || new Error('No RPC available');
+
             await loadOrderbook();
             await loadLedger();
             startAutoRefresh();
@@ -693,6 +711,15 @@
             render();
         } catch (e) {
             console.error('Orderbook load error:', e);
+            if (currentRpcIndex < RPC_URLS.length - 1) {
+                try {
+                    currentRpcIndex += 1;
+                    readProvider = new ethers.JsonRpcProvider(RPC_URLS[currentRpcIndex], 1, { staticNetwork: true });
+                    marketRead = new ethers.Contract(CONTRACT_ADDRESS, MARKET_ABI, readProvider);
+                    await loadOrderbook();
+                    return;
+                } catch (_) {}
+            }
             asksEl.innerHTML = '<p class="fs-7 text-muted text-center py-2 mb-0">Unable to load — contract may not be deployed yet</p>';
             bidsEl.innerHTML = asksEl.innerHTML;
         }
@@ -760,6 +787,16 @@
             renderLedger();
         } catch (e) {
             console.warn('Ledger load error:', e);
+            // One-shot RPC failover for ledger reads
+            if (currentRpcIndex < RPC_URLS.length - 1) {
+                try {
+                    currentRpcIndex += 1;
+                    readProvider = new ethers.JsonRpcProvider(RPC_URLS[currentRpcIndex], 1, { staticNetwork: true });
+                    marketRead = new ethers.Contract(CONTRACT_ADDRESS, MARKET_ABI, readProvider);
+                    await loadLedger();
+                    return;
+                } catch (_) {}
+            }
             ledgerEl.innerHTML = '<p class="fs-7 text-muted text-center py-2 mb-0">Unable to load events</p>';
         }
     }
