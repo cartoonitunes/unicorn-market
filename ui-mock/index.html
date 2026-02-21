@@ -737,7 +737,13 @@
             const parsed = JSON.parse(raw);
             if (!Array.isArray(parsed?.entries)) return;
             ledgerEntries = parsed.entries;
-            ledgerLastBlock = Number(parsed.lastBlock || DEPLOYMENT_BLOCK);
+            // Only trust cached cursor when we actually have cached entries.
+            // Prevent "empty ledger + advanced cursor" from skipping historical backfill.
+            if (ledgerEntries.length > 0) {
+                ledgerLastBlock = Number(parsed.lastBlock || DEPLOYMENT_BLOCK);
+            } else {
+                ledgerLastBlock = DEPLOYMENT_BLOCK;
+            }
             renderLedger();
         } catch (e) {
             console.warn('ledger cache load failed', e);
@@ -798,9 +804,11 @@
             const topicFilled = ethers.id('OrderFilled(uint256,address,uint256,uint256,uint256,uint256)').toLowerCase();
             const topicCancelled = ethers.id('OrderCancelled(uint256,address,uint256)').toLowerCase();
 
-            // Incremental sync: only fetch new blocks after last successful ledger block.
-            // First run (no cache) bootstraps from deployment block.
-            const startFrom = Math.max(DEPLOYMENT_BLOCK, (ledgerLastBlock || DEPLOYMENT_BLOCK));
+            // Incremental sync with safe backfill.
+            // If we have no entries yet, force historical scan from deployment block.
+            const startFrom = ledgerEntries.length === 0
+                ? DEPLOYMENT_BLOCK
+                : Math.max(DEPLOYMENT_BLOCK, (ledgerLastBlock || DEPLOYMENT_BLOCK));
             const fromBlock = startFrom <= currentBlock ? startFrom : currentBlock;
 
             const allLogs = await getLogsChunked([topicPlaced, topicFilled, topicCancelled], fromBlock, currentBlock);
@@ -834,7 +842,13 @@
 
             ledgerEntries.sort((a, b) => b.block - a.block);
             ledgerEntries = ledgerEntries.slice(0, 200);
-            ledgerLastBlock = currentBlock + 1;
+            // Advance cursor only after bootstrap has produced entries;
+            // avoids locking into an empty cursor state.
+            if (ledgerEntries.length > 0) {
+                ledgerLastBlock = currentBlock + 1;
+            } else {
+                ledgerLastBlock = DEPLOYMENT_BLOCK;
+            }
             saveLedgerCache();
             renderLedger();
         } catch (e) {
