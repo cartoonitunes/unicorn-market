@@ -429,7 +429,7 @@
     const W_MEAT   = '0xDFA208BB0B811cFBB5Fa3Ea98Ec37Aa86180e668';
 
     const REFRESH_INTERVAL = 15000;
-    const EVENT_LOOKBACK_BLOCKS = 200;
+    const EVENT_LOOKBACK_BLOCKS = 1000;
 
     // ─── ABIs ──────────────────────────────────────────────────────────
     const MARKET_ABI = [
@@ -463,6 +463,7 @@
     let refreshTimer = null;
     let activeFillId = null;
     let txPending = false;
+    let refreshTick = 0;
 
     // ─── DOM refs ──────────────────────────────────────────────────────
     const asksEl = document.getElementById('asks');
@@ -763,8 +764,12 @@
     function startAutoRefresh() {
         if (refreshTimer) clearInterval(refreshTimer);
         refreshTimer = setInterval(async () => {
+            refreshTick += 1;
             await loadOrderbook();
-            await loadLedger();
+            // Ledger refresh every ~60s (4 ticks) to avoid heavy getLogs traffic
+            if (refreshTick % 4 === 0) {
+                await loadLedger();
+            }
             if (userAddress) await updateBalances();
         }, REFRESH_INTERVAL);
     }
