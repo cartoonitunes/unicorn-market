@@ -429,7 +429,7 @@
     const W_MEAT   = '0xDFA208BB0B811cFBB5Fa3Ea98Ec37Aa86180e668';
 
     const REFRESH_INTERVAL = 15000;
-    const EVENT_LOOKBACK_BLOCKS = 5000;
+    const EVENT_LOOKBACK_BLOCKS = 200;
 
     // ─── ABIs ──────────────────────────────────────────────────────────
     const MARKET_ABI = [
@@ -696,6 +696,23 @@
         }
     }
 
+    async function getLogsChunked(topic, fromBlock, toBlock) {
+        // Free-tier Alchemy can cap eth_getLogs block ranges aggressively (e.g. 10 blocks).
+        const chunkSize = 10;
+        const out = [];
+        for (let start = fromBlock; start <= toBlock; start += chunkSize) {
+            const end = Math.min(toBlock, start + chunkSize - 1);
+            const logs = await readProvider.getLogs({
+                address: CONTRACT_ADDRESS,
+                topics: [topic],
+                fromBlock: start,
+                toBlock: end,
+            });
+            if (logs && logs.length) out.push(...logs);
+        }
+        return out;
+    }
+
     // ─── Load Ledger (Events) ──────────────────────────────────────────
     async function loadLedger() {
         try {
@@ -708,9 +725,9 @@
             const topicCancelled = ethers.id('OrderCancelled(uint256,address,uint256)');
 
             const [placedLogs, filledLogs, cancelledLogs] = await Promise.all([
-                readProvider.getLogs({ address: CONTRACT_ADDRESS, topics: [topicPlaced], fromBlock, toBlock: 'latest' }),
-                readProvider.getLogs({ address: CONTRACT_ADDRESS, topics: [topicFilled], fromBlock, toBlock: 'latest' }),
-                readProvider.getLogs({ address: CONTRACT_ADDRESS, topics: [topicCancelled], fromBlock, toBlock: 'latest' }),
+                getLogsChunked(topicPlaced, fromBlock, currentBlock),
+                getLogsChunked(topicFilled, fromBlock, currentBlock),
+                getLogsChunked(topicCancelled, fromBlock, currentBlock),
             ]);
 
             ledgerEntries = [];
