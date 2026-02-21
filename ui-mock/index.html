@@ -430,6 +430,7 @@
 
     const REFRESH_INTERVAL = 15000;
     const EVENT_LOOKBACK_BLOCKS = 1000;
+    const DEPLOYMENT_BLOCK = 24500943;
 
     // ─── ABIs ──────────────────────────────────────────────────────────
     const MARKET_ABI = [
@@ -718,7 +719,7 @@
     async function loadLedger() {
         try {
             const currentBlock = await readProvider.getBlockNumber();
-            const fromBlock = Math.max(0, currentBlock - EVENT_LOOKBACK_BLOCKS);
+            const fromBlock = Math.max(DEPLOYMENT_BLOCK, currentBlock - EVENT_LOOKBACK_BLOCKS);
             const iface = new ethers.Interface(MARKET_ABI);
 
             const topicPlaced = ethers.id('OrderPlaced(uint256,address,address,address,uint256,uint256)');
