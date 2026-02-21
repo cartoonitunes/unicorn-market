@@ -762,9 +762,8 @@
         }
     }
 
-    async function getLogsChunked(topics0, fromBlock, toBlock) {
+    async function getLogsChunked(topic0, fromBlock, toBlock) {
         // Free-tier RPC can cap eth_getLogs ranges and request rates.
-        // Query in small chunks, combine all market event topics in one pass.
         const chunkSize = 10;
         const out = [];
         for (let start = fromBlock; start <= toBlock; start += chunkSize) {
@@ -774,7 +773,7 @@
                 try {
                     const logs = await readProvider.getLogs({
                         address: CONTRACT_ADDRESS,
-                        topics: [topics0],
+                        topics: [topic0],
                         fromBlock: start,
                         toBlock: end,
                     });
@@ -783,7 +782,7 @@
                     break;
                 } catch (e) {
                     if (attempt === 3) {
-                        console.warn('getLogs chunk failed', { start, end, err: e?.shortMessage || e?.message || e });
+                        console.warn('getLogs chunk failed', { start, end, topic0, err: e?.shortMessage || e?.message || e });
                     } else {
                         await sleep(150 * attempt);
                     }
@@ -811,7 +810,23 @@
                 : Math.max(DEPLOYMENT_BLOCK, (ledgerLastBlock || DEPLOYMENT_BLOCK));
             const fromBlock = startFrom <= currentBlock ? startFrom : currentBlock;
 
-            const allLogs = await getLogsChunked([topicPlaced, topicFilled, topicCancelled], fromBlock, currentBlock);
+            let [placedLogs, filledLogs, cancelledLogs] = await Promise.all([
+                getLogsChunked(topicPlaced, fromBlock, currentBlock),
+                getLogsChunked(topicFilled, fromBlock, currentBlock),
+                getLogsChunked(topicCancelled, fromBlock, currentBlock),
+            ]);
+
+            // Bootstrap fallback: if we still have nothing, force a wider recent backfill.
+            if (ledgerEntries.length === 0 && placedLogs.length + filledLogs.length + cancelledLogs.length === 0) {
+                const fallbackFrom = Math.max(DEPLOYMENT_BLOCK, currentBlock - 5000);
+                [placedLogs, filledLogs, cancelledLogs] = await Promise.all([
+                    getLogsChunked(topicPlaced, fallbackFrom, currentBlock),
+                    getLogsChunked(topicFilled, fallbackFrom, currentBlock),
+                    getLogsChunked(topicCancelled, fallbackFrom, currentBlock),
+                ]);
+            }
+
+            const allLogs = [...placedLogs, ...filledLogs, ...cancelledLogs];
 
             const newEntries = [];
             for (const log of allLogs) {
