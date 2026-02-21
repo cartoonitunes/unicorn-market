@@ -764,7 +764,9 @@
 
     async function getLogsChunked(topic0, fromBlock, toBlock) {
         // Free-tier RPC can cap eth_getLogs ranges and request rates.
-        const chunkSize = 10;
+        // Rarible can handle larger ranges; Alchemy free-tier may need tiny chunks.
+        const usingRarible = (RPC_URLS[currentRpcIndex] || '').includes('rarible.com');
+        const chunkSize = usingRarible ? 250 : 10;
         const out = [];
         for (let start = fromBlock; start <= toBlock; start += chunkSize) {
             const end = Math.min(toBlock, start + chunkSize - 1);
@@ -806,7 +808,7 @@
             // Incremental sync with safe backfill.
             // If we have no entries yet, force historical scan from deployment block.
             const startFrom = ledgerEntries.length === 0
-                ? DEPLOYMENT_BLOCK
+                ? Math.max(DEPLOYMENT_BLOCK, currentBlock - 5000)
                 : Math.max(DEPLOYMENT_BLOCK, (ledgerLastBlock || DEPLOYMENT_BLOCK));
             const fromBlock = startFrom <= currentBlock ? startFrom : currentBlock;
 
@@ -844,6 +846,23 @@
                     newEntries.push({ key, block: log.blockNumber, text: `Filled #${Number(parsed.args.orderId)} · took ${fmt(Number(parsed.args.sellAmountFilled))} for ${fmt(Number(parsed.args.buyAmountPaid))} by ${shortAddr(parsed.args.taker)}` });
                 } else if (t0 === topicCancelled) {
                     newEntries.push({ key, block: log.blockNumber, text: `Cancelled #${Number(parsed.args.orderId)} · ${fmt(Number(parsed.args.sellAmountRefunded))} refunded to ${shortAddr(parsed.args.maker)}` });
+                }
+            }
+
+            // Final fallback: if logs are unavailable, synthesize ledger rows from onchain orders.
+            if (newEntries.length === 0 && ledgerEntries.length === 0) {
+                const count = Number(await marketRead.orderCount());
+                for (let id = count - 1; id >= 0; id--) {
+                    const o = await marketRead.getOrder(id);
+                    const status = Number(o.status) === 0 ? 'Open' : (Number(o.status) === 1 ? 'Filled' : 'Cancelled');
+                    const amount = isUnicornSide(o.sellToken)
+                        ? `${fmt(Number(o.sellAmountTotal))} ${tokenSymbol(o.sellToken)}`
+                        : `${fmt(Number(o.sellAmountTotal) / 1000)} ${tokenSymbol(o.sellToken)}`;
+                    newEntries.push({
+                        key: `order:${id}`,
+                        block: Number(o.createdAt || 0),
+                        text: `${status} #${id} · ${amount} by ${shortAddr(o.maker)}`,
+                    });
                 }
             }
 
