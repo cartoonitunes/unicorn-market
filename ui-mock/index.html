@@ -698,19 +698,28 @@
         }
     }
 
-    async function getLogsChunked(topic, fromBlock, toBlock) {
-        // Free-tier Alchemy can cap eth_getLogs block ranges aggressively (e.g. 10 blocks).
+    async function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    async function getLogsChunked(topics0, fromBlock, toBlock) {
+        // Free-tier RPC can cap eth_getLogs ranges and request rates.
+        // Query in small chunks, combine all market event topics in one pass.
         const chunkSize = 10;
         const out = [];
         for (let start = fromBlock; start <= toBlock; start += chunkSize) {
             const end = Math.min(toBlock, start + chunkSize - 1);
-            const logs = await readProvider.getLogs({
-                address: CONTRACT_ADDRESS,
-                topics: [topic],
-                fromBlock: start,
-                toBlock: end,
-            });
-            if (logs && logs.length) out.push(...logs);
+            try {
+                const logs = await readProvider.getLogs({
+                    address: CONTRACT_ADDRESS,
+                    topics: [topics0],
+                    fromBlock: start,
+                    toBlock: end,
+                });
+                if (logs && logs.length) out.push(...logs);
+            } catch (e) {
+                // Skip failed chunks instead of failing the whole ledger.
+                console.warn('getLogs chunk failed', { start, end, err: e?.shortMessage || e?.message || e });
+            }
+            await sleep(25);
         }
         return out;
     }
@@ -722,35 +731,29 @@
             const fromBlock = Math.max(DEPLOYMENT_BLOCK, currentBlock - EVENT_LOOKBACK_BLOCKS);
             const iface = new ethers.Interface(MARKET_ABI);
 
-            const topicPlaced = ethers.id('OrderPlaced(uint256,address,address,address,uint256,uint256)');
-            const topicFilled = ethers.id('OrderFilled(uint256,address,uint256,uint256,uint256,uint256)');
-            const topicCancelled = ethers.id('OrderCancelled(uint256,address,uint256)');
+            const topicPlaced = ethers.id('OrderPlaced(uint256,address,address,address,uint256,uint256)').toLowerCase();
+            const topicFilled = ethers.id('OrderFilled(uint256,address,uint256,uint256,uint256,uint256)').toLowerCase();
+            const topicCancelled = ethers.id('OrderCancelled(uint256,address,uint256)').toLowerCase();
 
-            const [placedLogs, filledLogs, cancelledLogs] = await Promise.all([
-                getLogsChunked(topicPlaced, fromBlock, currentBlock),
-                getLogsChunked(topicFilled, fromBlock, currentBlock),
-                getLogsChunked(topicCancelled, fromBlock, currentBlock),
-            ]);
+            const allLogs = await getLogsChunked([topicPlaced, topicFilled, topicCancelled], fromBlock, currentBlock);
 
             ledgerEntries = [];
 
-            for (const log of placedLogs) {
+            for (const log of allLogs) {
                 const parsed = iface.parseLog(log);
-                const sym = tokenSymbol(parsed.args.sellToken);
-                const amt = isUnicornSide(parsed.args.sellToken)
-                    ? `${fmt(Number(parsed.args.sellAmountTotal))} ${sym}`
-                    : `${fmt(Number(parsed.args.sellAmountTotal) / 1000)} ${sym}`;
-                ledgerEntries.push({ block: log.blockNumber, text: `Placed #${Number(parsed.args.orderId)} · ${amt} by ${shortAddr(parsed.args.maker)}` });
-            }
+                const t0 = (log.topics?.[0] || '').toLowerCase();
 
-            for (const log of filledLogs) {
-                const parsed = iface.parseLog(log);
-                ledgerEntries.push({ block: log.blockNumber, text: `Filled #${Number(parsed.args.orderId)} · took ${fmt(Number(parsed.args.sellAmountFilled))} for ${fmt(Number(parsed.args.buyAmountPaid))} by ${shortAddr(parsed.args.taker)}` });
-            }
-
-            for (const log of cancelledLogs) {
-                const parsed = iface.parseLog(log);
-                ledgerEntries.push({ block: log.blockNumber, text: `Cancelled #${Number(parsed.args.orderId)} · ${fmt(Number(parsed.args.sellAmountRefunded))} refunded to ${shortAddr(parsed.args.maker)}` });
+                if (t0 === topicPlaced) {
+                    const sym = tokenSymbol(parsed.args.sellToken);
+                    const amt = isUnicornSide(parsed.args.sellToken)
+                        ? `${fmt(Number(parsed.args.sellAmountTotal))} ${sym}`
+                        : `${fmt(Number(parsed.args.sellAmountTotal) / 1000)} ${sym}`;
+                    ledgerEntries.push({ block: log.blockNumber, text: `Placed #${Number(parsed.args.orderId)} · ${amt} by ${shortAddr(parsed.args.maker)}` });
+                } else if (t0 === topicFilled) {
+                    ledgerEntries.push({ block: log.blockNumber, text: `Filled #${Number(parsed.args.orderId)} · took ${fmt(Number(parsed.args.sellAmountFilled))} for ${fmt(Number(parsed.args.buyAmountPaid))} by ${shortAddr(parsed.args.taker)}` });
+                } else if (t0 === topicCancelled) {
+                    ledgerEntries.push({ block: log.blockNumber, text: `Cancelled #${Number(parsed.args.orderId)} · ${fmt(Number(parsed.args.sellAmountRefunded))} refunded to ${shortAddr(parsed.args.maker)}` });
+                }
             }
 
             ledgerEntries.sort((a, b) => b.block - a.block);
